@@ -1,0 +1,249 @@
+---
+title: "Thyroid Dataset Analysis"
+author: "Stavros Oikonomou"
+date: "3/27/2022"
+output: html_document
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r loading libraries, warning=FALSE, message=FALSE}
+ipak <- function(pkg){
+  new.pkg <- pkg[!(pkg %in% installed.packages()[, "Package"])]
+  if (length(new.pkg)) 
+    install.packages(new.pkg, dependencies = TRUE)
+  sapply(pkg, require, character.only = TRUE)
+}
+
+packages <- c("dplyr","data.table","ggplot2","missForest", "MLDataR","tidymodels",
+              "skimr","themis","stacks","doParallel","knitr","GGally","naniar","tidyverse")
+
+ipak(packages)
+```
+
+## R Markdown
+
+```{r loading dataset, message=FALSE, warning=FALSE}
+df_raw <- MLDataR::thyroid_disease
+```
+
+```{r df structure}
+broom::tidy(str(df_raw))
+```
+
+```{r}
+df <- df_raw %>%
+  select(-TSH_measured,-T3_measured,-T4_measured,-thyrox_util_rate_T4U_measured,
+         -FTI_measured,-ref_src) %>%
+  mutate_at(vars(patient_gender:psych_condition), 
+            function(x) as.factor(as.character(x))) %>%
+  mutate(Thyroid_Class = factor(ThryroidClass),
+         patient_gender = factor(case_when(patient_gender==1~"Female",
+                                               patient_gender==0~"Male",
+                                               TRUE~NA_character_))) %>%
+  select(-ThryroidClass)
+```
+
+```{r}
+skim(df)
+```
+
+We have an strange entry for patient_age. So we are going to exclude
+extreme age values that doesn't make any sense. We have one patient with
+age being 455.
+
+We have also some extreme values for TSH, T4 and FTI but these values
+are possible after checking online, so we gonna keep them. The strange
+thing in these values is that all recorded for patients negative in
+Thyroid issues.
+
+```{r}
+df %>% filter(patient_age>100) %>% count(patient_age)
+
+df <- df %>% filter(patient_age <= 100)
+```
+
+```{r}
+ggplot(df, aes(x=Thyroid_Class, fill=Thyroid_Class)) + geom_bar() + theme_bw() +
+  xlab("Theroid Class") + ggtitle("Thyroid Class distribution")
+```
+
+## Missing values plot
+
+Now let's check the missing values and the patterns of missingness.
+
+```{r, warning=FALSE, message=FALSE, fig.align='center',fig.width=8, fig.height=8}
+df %>% gg_miss_upset()
+```
+
+## Correlation and descriptive plot
+
+```{r corr plot, message=FALSE, warning=FALSE,fig.width=10, fig.height= 10}
+df %>% select(which(sapply(.,class)=="numeric"),Thyroid_Class,patient_age,patient_gender) %>%
+  ggpairs(aes(colour = Thyroid_Class, alpha = 0.7),
+          lower = list(continuous = wrap("smooth", alpha = 0.3, size=0.1)))
+```
+
+## Splitting the dataset
+
+```{r}
+set.seed(1234)
+df_split <- initial_split(data = df,prop = 0.8 ,strata = Thyroid_Class)
+
+df_train <- training(df_split)
+df_test <- testing(df_split)
+```
+
+## Recipes for data preproccessing
+
+We gonna use `step_*` functions from `recipe` library for data
+preproccessing.
+
+-   `step_impute_bag()` for imputing the missing data using bagged tree
+    models with default settings
+
+-   `step_downsample()` We have an imbalanced dataset so we gonna use
+    downsample to train the model
+
+-   `step_nzv()` for removing variables with variance close to zero
+
+-   `step_log()` for transforming the TSH_reading to normal distribution.
+    Even we are not using a model that has the normal distribution
+    assumptions, i decide to logtransform because of few outlier values
+
+-   `step_normalize()` scale and center all numerica values
+
+-   `step_dummy()` here is one difference with `caret` or `R based` ML
+    models who automatically do that step, but because we are train our
+    model with `Tidymodels` we need to do that step for all nominal
+    variables
+
+This recipe also gonna be applied for our test set, but instead of using
+the `juice()` function we are going to use the `bake()` function. The
+`juice()` function use the same recipe but applies only for the data we
+set in our recipe. If we want to use a recipe to a new dataset we have
+to use the `bake()` function.
+
+```{r}
+train_balanced <- 
+  recipe(Thyroid_Class ~ . ,data = df_train) %>%
+  #step_impute_bag(all_predictors()) %>%
+  step_nzv(all_predictors(),freq_cut = 99/1) %>%
+  step_log(TSH_reading) %>%
+  step_normalize(all_numeric()) %>%
+  step_downsample(Thyroid_Class, skip = TRUE) %>%
+  step_dummy(all_nominal(), -all_outcomes()) %>%
+  prep()
+  
+# train_ds <- juice(train_recipe)
+# 
+# test_ds <- bake(object = train_recipe,new_data = df_test)
+```
+
+
+```{r}
+set.seed(1234)
+
+train_fold <- vfold_cv(df_train, v=10, strata = Thyroid_Class)
+
+thyroid_metrics <- metric_set(mn_log_loss, accuracy, sensitivity, specificity)
+```
+
+```{r}
+# for no downsample
+train_recipe_imb <- 
+  recipe(Thyroid_Class ~ . ,data = df_train) %>%
+  step_impute_knn(all_predictors()) %>%
+  step_nzv(all_predictors(),freq_cut = 99/1) %>%
+  #step_novel(all_nominal_predictors()) %>%
+  step_log(TSH_reading) %>%
+  step_normalize(all_numeric()) %>%
+  step_dummy(all_nominal(), -all_outcomes()) 
+```
+
+```{r}
+library(baguette)
+library(ranger)
+
+tune_spec <- rand_forest(mtry = tune(), min_n = tune(), trees = 100) %>%
+  set_engine("ranger") %>%
+  set_mode("classification")
+```
+
+```{r}
+imb_wf <- workflow() %>%
+  add_recipe(train_recipe_imb) %>%
+  add_model(tune_spec)
+
+
+```
+
+```{r}
+doParallel::registerDoParallel()
+set.seed(345)
+
+tune_res <-
+  tune_grid(imb_wf,
+          resamples = train_fold,
+          tune=20)
+
+tune_res %>% collect_metrics()
+```
+
+```{r}
+tune_res %>% collect_metrics() %>%
+  filter(.metric == "roc_auc") %>%
+  select(mean, min_n, mtry) %>%
+  pivot_longer(min_n:mtry,
+    values_to = "value",
+    names_to = "parameter"
+  ) %>%
+  ggplot(aes(value, mean, color = parameter)) +
+  geom_point(show.legend = FALSE) +
+  facet_wrap(~parameter, scales = "free_x") +
+  labs(x = NULL, y = "AUC")
+```
+
+```{r}
+best_auc <- select_best(tune_res, "roc_auc")
+
+final_model <- finalize_model(tune_spec,best_auc)
+```
+
+```{r}
+library(vip)
+
+train_prep <- prep(train_recipe_imb)
+
+
+final_model %>%
+  set_engine("ranger", importance = "permutation") %>%
+  fit(Thyroid_Class~. , data= juice(train_prep)) %>%
+  vip(geom = "point")
+```
+```{r}
+final_wf <- workflow() %>%
+  add_recipe(train_recipe_imb) %>%
+  add_model(final_model)
+
+final_res <- final_wf %>%
+  last_fit(df_split)
+
+final_res %>% collect_metrics()
+
+final_res %>% collect_predictions()
+```
+
+
+```{r}
+
+fit(imb_wf, data=df_train)
+
+train_ds <- fit_resamples(
+  imb_wf, resamples = train_fold, metrics = thyroid_metrics
+)
+
+collect_metrics(train_ds)
+```
+
