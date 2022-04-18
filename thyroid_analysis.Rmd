@@ -169,6 +169,8 @@ library(ranger)
 tune_spec <- rand_forest(mtry = tune(), min_n = tune(), trees = 100) %>%
   set_engine("ranger") %>%
   set_mode("classification")
+
+ctrl <- control_resamples(save_pred = TRUE)
 ```
 
 ```{r}
@@ -179,6 +181,11 @@ imb_wf <- workflow() %>%
 
 ```
 
+We can have three types of fitting
+- plain fit with `r fit()` function
+- fitting with resample using the `r fit_resamples()` function
+- if we want to tune the hyperparameters `r tune_grid()`
+
 ```{r}
 doParallel::registerDoParallel()
 set.seed(345)
@@ -186,10 +193,19 @@ set.seed(345)
 tune_res <-
   tune_grid(imb_wf,
           resamples = train_fold,
-          tune=20)
+          tune=20,control = ctrl)
 
 tune_res %>% collect_metrics()
 ```
+
+```{r}
+tune_res %>% 
+  collect_predictions() %>%
+  group_by(id) %>%
+  roc_curve(Thyroid_Class, .pred_negative) %>%
+  autoplot
+```
+
 
 ```{r}
 tune_res %>% collect_metrics() %>%
@@ -230,9 +246,24 @@ final_wf <- workflow() %>%
 final_res <- final_wf %>%
   last_fit(df_split)
 
+###other approach
+asdf <- imb_wf %>%
+  finalize_workflow(select_best(tune_res, "roc_auc")) %>%
+  last_fit(df_split)
+
+asdf %>% collect_predictions() %>% roc_auc(Thyroid_Class, .pred_negative:.pred_sick) #results on test set
+
+collect_predictions(asdf) %>% conf_mat(Thyroid_Class, .pred_class) %>% autoplot()
+
+asdf$.predictions
+
+
 final_res %>% collect_metrics()
 
 final_res %>% collect_predictions()
+
+collect_predictions(final_res) %>%
+  conf_mat(Thyroid_Class, .pred_class)
 ```
 
 
@@ -241,7 +272,9 @@ final_res %>% collect_predictions()
 fit(imb_wf, data=df_train)
 
 train_ds <- fit_resamples(
-  imb_wf, resamples = train_fold, metrics = thyroid_metrics
+  final_wf, 
+  resamples = train_fold,
+  metrics = thyroid_metrics
 )
 
 collect_metrics(train_ds)
