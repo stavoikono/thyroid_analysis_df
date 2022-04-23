@@ -16,7 +16,7 @@ ipak <- function(pkg){
   sapply(pkg, require, character.only = TRUE)
 }
 
-packages <- c("dplyr","data.table","ggplot2","missForest", "MLDataR","tidymodels",
+packages <- c("dplyr","data.table","ggplot2","missForest", "MLDataR","tidymodels", "plotly",
               "skimr","themis","stacks","doParallel","knitr","GGally","naniar","tidyverse")
 
 ipak(packages)
@@ -65,8 +65,9 @@ df <- df %>% filter(patient_age <= 100)
 ```
 
 ```{r}
+ggplotly(
 ggplot(df, aes(x=Thyroid_Class, fill=Thyroid_Class)) + geom_bar() + theme_bw() +
-  xlab("Theroid Class") + ggtitle("Thyroid Class distribution")
+  xlab("Theroid Class") + ggtitle("Thyroid Class distribution"))
 ```
 
 ## Missing values plot
@@ -100,8 +101,8 @@ df_test <- testing(df_split)
 We gonna use `step_*` functions from `recipe` library for data
 preproccessing.
 
--   `step_impute_bag()` for imputing the missing data using bagged tree
-    models with default settings
+-   `step_impute_knn()` for imputing the missing data using k nearest neighbor
+    models with default settings. All predictors are going to be used for the knn model
 
 -   `step_downsample()` We have an imbalanced dataset so we gonna use
     downsample to train the model
@@ -110,9 +111,9 @@ preproccessing.
 
 -   `step_log()` for transforming the TSH_reading to normal distribution.
     Even we are not using a model that has the normal distribution
-    assumptions, i decide to logtransform because of few outlier values
+    assumptions, I decide to logtransform because of few outlier values
 
--   `step_normalize()` scale and center all numerica values
+-   `step_normalize()` scale and center all numerical values
 
 -   `step_dummy()` here is one difference with `caret` or `R based` ML
     models who automatically do that step, but because we are train our
@@ -125,7 +126,7 @@ the `juice()` function we are going to use the `bake()` function. The
 set in our recipe. If we want to use a recipe to a new dataset we have
 to use the `bake()` function.
 
-```{r}
+```{r, eval=FALSE}
 train_balanced <- 
   recipe(Thyroid_Class ~ . ,data = df_train) %>%
   #step_impute_bag(all_predictors()) %>%
@@ -142,13 +143,7 @@ train_balanced <-
 ```
 
 
-```{r}
-set.seed(1234)
 
-train_fold <- vfold_cv(df_train, v=10, strata = Thyroid_Class)
-
-thyroid_metrics <- metric_set(mn_log_loss, accuracy, sensitivity, specificity)
-```
 
 ```{r}
 # for no downsample
@@ -162,39 +157,73 @@ train_recipe_imb <-
   step_dummy(all_nominal(), -all_outcomes()) 
 ```
 
+- Setting the k-fold cross validation for k=10 stratified by Thyroid class.
+
+- Setting the metrics for training the Random forest algorithm. We are gonna use the `yardstick` package for setting the metrics:
+
++ Accuracy
+
++ Sensitivity
+
++ Specificity
+
++ Mean log loss
+
 ```{r}
+set.seed(1234)
+
+train_fold <- vfold_cv(df_train, v=10, strata = Thyroid_Class)
+
+thyroid_metrics <- metric_set(mn_log_loss, accuracy, sensitivity, specificity)
+```
+
+- Setting the engine for the model. Planning to tune the `mtry` and `min_n` parameters.
+
+```{r, message=FALSE, warning=FALSE}
 library(baguette)
 library(ranger)
 
-tune_spec <- rand_forest(mtry = tune(), min_n = tune(), trees = 100) %>%
+tune_spec <- 
+  rand_forest(mtry = tune(),
+              min_n = tune(),
+              trees = 100) %>%
   set_engine("ranger") %>%
   set_mode("classification")
 
 ctrl <- control_resamples(save_pred = TRUE)
 ```
 
+- Creating the workflow using the recipe and the engine we set up in previous steps.
+
 ```{r}
 imb_wf <- workflow() %>%
   add_recipe(train_recipe_imb) %>%
   add_model(tune_spec)
 
-
 ```
 
 We can have three types of fitting
-- plain fit with `r fit()` function
-- fitting with resample using the `r fit_resamples()` function
-- if we want to tune the hyperparameters `r tune_grid()`
+- plain fit with `fit()` function
+- fitting with resample using the `fit_resamples()` function
+- if we want to tune the hyperparameters `tune_grid()`
 
-```{r}
-doParallel::registerDoParallel()
+Parallel proccessing gonna be used for training the model faster.
+
+```{r tune grid}
+
 set.seed(345)
 
-tune_res <-
-  tune_grid(imb_wf,
-          resamples = train_fold,
-          tune=20,control = ctrl)
+doParallel::registerDoParallel()
 
+tune_res <- 
+  tune::tune_grid(object = imb_wf,
+          resamples = train_fold,
+          grid=20,
+          control= ctrl)
+```
+
+
+```{r}
 tune_res %>% collect_metrics()
 ```
 
@@ -218,7 +247,7 @@ tune_res %>% collect_metrics() %>%
   ggplot(aes(value, mean, color = parameter)) +
   geom_point(show.legend = FALSE) +
   facet_wrap(~parameter, scales = "free_x") +
-  labs(x = NULL, y = "AUC")
+  labs(x = NULL, y = "AUC") + theme_bw()
 ```
 
 ```{r}
@@ -251,7 +280,6 @@ asdf <- imb_wf %>%
   finalize_workflow(select_best(tune_res, "roc_auc")) %>%
   last_fit(df_split)
 
-asdf %>% collect_predictions() %>% roc_auc(Thyroid_Class, .pred_negative:.pred_sick) #results on test set
 
 collect_predictions(asdf) %>% conf_mat(Thyroid_Class, .pred_class) %>% autoplot()
 
