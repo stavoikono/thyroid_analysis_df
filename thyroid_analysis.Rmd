@@ -4,13 +4,15 @@ author: "Stavros Oikonomou"
 date: "3/27/2022"
 output: 
   html_document:
-    code_folding: hide
+    code_folding: show
 editor_options: 
   markdown: 
     wrap: 72
 ---
 
-```{r loading libraries, warning=FALSE, message=FALSE, echo=FALSE}
+
+
+```{r loading libraries, warning=FALSE, message=FALSE, echo=FALSE, include=FALSE}
 ipak <- function(pkg){
   new.pkg <- pkg[!(pkg %in% installed.packages()[, "Package"])]
   if (length(new.pkg)) 
@@ -24,15 +26,30 @@ packages <- c("dplyr","data.table","ggplot2","missForest", "MLDataR","tidymodels
 ipak(packages)
 ```
 
-## R Markdown
+### Loading the dataset
+
+For this analysis we are planning to use the **Thyroid disease prediction** from `MLDataR` package. It is a supervised machine learning classification data set to allow for the prediction of thyroid disease utilizing historic patient records.
 
 ```{r loading dataset, message=FALSE, warning=FALSE}
 df_raw <- MLDataR::thyroid_disease
 ```
+ 
+
+The **Thyroid disease prediction** dataset has:
+
+- `r nrow(df_raw)` entries and
+- `r ncol(df_raw)` variables
+
+
+Let's see also the structure of our dataset
 
 ```{r df structure}
-str(df_raw)
+glimpse(df_raw)
 ```
+
+### Data preproccessing 
+
+Removing the binary variables about the different measurements because we are planning to use the numeric measurements and for that reason these binaries variables doesn't give us any extra information.
 
 ```{r}
 df <- df_raw %>%
@@ -46,6 +63,8 @@ df <- df_raw %>%
                                                TRUE~NA_character_))) %>%
   select(-ThryroidClass)
 ```
+
+### Data Summary
 
 ```{r}
 skim(df)
@@ -65,6 +84,7 @@ df %>% filter(patient_age>100) %>% count(patient_age)
 
 df <- df %>% filter(patient_age <= 100)
 ```
+### EDA
 
 ```{r}
 ggplotly(
@@ -224,10 +244,12 @@ tune_res <-
           control= ctrl)
 ```
 
+printing the metrics fo the different mtry and min_n combinations 
 
-```{r}
-tune_res %>% collect_metrics()
-```
+`r kable(tune_res %>% collect_metrics(), "pipe")`
+
+
+Printing the AUROC for the different models trained and tested in each fold
 
 ```{r}
 tune_res %>% 
@@ -237,6 +259,7 @@ tune_res %>%
   autoplot
 ```
 
+Plotting the how mtry and min_n affect the AUC
 
 ```{r}
 tune_res %>% collect_metrics() %>%
@@ -252,11 +275,15 @@ tune_res %>% collect_metrics() %>%
   labs(x = NULL, y = "AUC") + theme_bw()
 ```
 
+Selecting the best model and fitting one more time to create the final model.
+
 ```{r}
 best_auc <- select_best(tune_res, "roc_auc")
 
 final_model <- finalize_model(tune_spec,best_auc)
 ```
+
+Printing the most important variable by descenting order.
 
 ```{r, warning=FALSE, message=FALSE}
 library(vip)
@@ -269,44 +296,26 @@ final_model %>%
   fit(Thyroid_Class~. , data= juice(train_prep)) %>%
   vip(geom = "point")
 ```
+
+Now we gonna fit the final model to the test set.
+
+We can do that with `tidymodels` by fitting the model to the initial split object.
+
 ```{r}
-final_wf <- workflow() %>%
-  add_recipe(train_recipe_imb) %>%
-  add_model(final_model)
-
-final_res <- final_wf %>%
-  last_fit(df_split)
-
-###other approach
-asdf <- imb_wf %>%
+final_res <- imb_wf %>%
   finalize_workflow(select_best(tune_res, "roc_auc")) %>%
   last_fit(df_split)
-
-
-collect_predictions(asdf) %>% conf_mat(Thyroid_Class, .pred_class) %>% autoplot()
-
-asdf$.predictions
-
-
-final_res %>% collect_metrics()
-
-final_res %>% collect_predictions()
-
-collect_predictions(final_res) %>%
-  conf_mat(Thyroid_Class, .pred_class)
 ```
 
+`r kable(final_res %>% collect_metrics(), "pipe")`
+
+Confusion matrix
 
 ```{r}
-
-fit(imb_wf, data=df_train)
-
-train_ds <- fit_resamples(
-  final_wf, 
-  resamples = train_fold,
-  metrics = thyroid_metrics
-)
-
-collect_metrics(train_ds)
+collect_predictions(final_res) %>% conf_mat(Thyroid_Class, .pred_class)
 ```
+
+
+
+
 
