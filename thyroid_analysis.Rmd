@@ -2,13 +2,15 @@
 title: "Thyroid Dataset Analysis"
 author: "Stavros Oikonomou"
 date: "3/27/2022"
-output: html_document
+output: 
+  html_document:
+    code_folding: hide
 editor_options: 
   markdown: 
     wrap: 72
 ---
 
-```{r loading libraries, warning=FALSE, message=FALSE}
+```{r loading libraries, warning=FALSE, message=FALSE, echo=FALSE}
 ipak <- function(pkg){
   new.pkg <- pkg[!(pkg %in% installed.packages()[, "Package"])]
   if (length(new.pkg)) 
@@ -29,7 +31,7 @@ df_raw <- MLDataR::thyroid_disease
 ```
 
 ```{r df structure}
-broom::tidy(str(df_raw))
+str(df_raw)
 ```
 
 ```{r}
@@ -157,9 +159,9 @@ train_recipe_imb <-
   step_dummy(all_nominal(), -all_outcomes()) 
 ```
 
-- Setting the k-fold cross validation for k=10 stratified by Thyroid class.
+Setting the k-fold cross validation for k=10 stratified by Thyroid class.
 
-- Setting the metrics for training the Random forest algorithm. We are gonna use the `yardstick` package for setting the metrics:
+Setting the metrics for training the Random forest algorithm. We are gonna use the `yardstick` package for setting the metrics:
 
 + Accuracy
 
@@ -177,7 +179,7 @@ train_fold <- vfold_cv(df_train, v=10, strata = Thyroid_Class)
 thyroid_metrics <- metric_set(mn_log_loss, accuracy, sensitivity, specificity)
 ```
 
-- Setting the engine for the model. Planning to tune the `mtry` and `min_n` parameters.
+Setting the engine for the model. Planning to tune the `mtry` and `min_n` parameters.
 
 ```{r, message=FALSE, warning=FALSE}
 library(baguette)
@@ -193,7 +195,7 @@ tune_spec <-
 ctrl <- control_resamples(save_pred = TRUE)
 ```
 
-- Creating the workflow using the recipe and the engine we set up in previous steps.
+Creating the workflow using the recipe and the engine we set up in previous steps.
 
 ```{r}
 imb_wf <- workflow() %>%
@@ -202,14 +204,14 @@ imb_wf <- workflow() %>%
 
 ```
 
-We can have three types of fitting
-- plain fit with `fit()` function
-- fitting with resample using the `fit_resamples()` function
-- if we want to tune the hyperparameters `tune_grid()`
+We can have three types of fitting:
++ plain fit with `fit()` function
++ fitting with resample using the `fit_resamples()` function
++ if we want to tune the hyperparameters `tune_grid()`
 
 Parallel proccessing gonna be used for training the model faster.
 
-```{r tune grid}
+```{r tune grid, message=FALSE, warning=FALSE}
 
 set.seed(345)
 
@@ -256,7 +258,7 @@ best_auc <- select_best(tune_res, "roc_auc")
 final_model <- finalize_model(tune_spec,best_auc)
 ```
 
-```{r}
+```{r, warning=FALSE, message=FALSE}
 library(vip)
 
 train_prep <- prep(train_recipe_imb)
